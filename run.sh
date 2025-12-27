@@ -8,7 +8,7 @@ clang -std=c11 -O2 -g3 -Wall -Wextra \
   -fno-stack-protector -fuse-ld=lld \
   -Wl,-Tkernel.ld -Wl,-Map=kernel.map \
   -o kernel.elf \
-  kernel.c common.c
+  kernel.c common.c shell.bin.o shell.c
 
 # QEMU 실행 (OpenSBI 펌웨어 사용)
 qemu-system-riscv32 -machine virt \

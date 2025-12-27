@@ -2,6 +2,7 @@
 
 #include "common.h"
 
+
 struct trap_frame {
     uint32_t ra;
     uint32_t gp;
@@ -36,6 +37,8 @@ struct trap_frame {
     uint32_t sp;
 } __attribute__((packed));
 
+#define USER_BASE 0x1000000
+#define SSTATUS_SPIE (1 << 5)
 #define READ_CSR(reg)                                                          \
     ({                                                                         \
         unsigned long __tmp;                                                   \
