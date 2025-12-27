@@ -37,6 +37,7 @@ struct trap_frame {
     uint32_t sp;
 } __attribute__((packed));
 
+#define SCAUSE_ECALL 8
 #define USER_BASE 0x1000000
 #define SSTATUS_SPIE (1 << 5)
 #define READ_CSR(reg)                                                          \

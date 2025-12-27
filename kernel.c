@@ -5,7 +5,11 @@
 
 #define PROC_UNUSED 0
 #define PROC_RUNNABLE 1
+#define PROC_EXITED 2
 
+void yield(void);
+void putchar(char ch);
+static long sbi_getchar(void);
 void delay(void) {
     for (int i = 0; i < 30000000; i++)
         __asm__ __volatile__("nop");
@@ -71,13 +75,48 @@ struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4,
     return (struct sbiret){ .error = a0, .value = a1 };
 }
 
+
+static void handle_syscall(struct trap_frame *f) {
+    switch (f->a3) {
+        case SYS_PUTCHAR:
+            putchar((char)f->a0);
+            break;
+        case SYS_GETCHAR: {
+            while (1) {
+                long ch = sbi_getchar();
+                if (ch >= 0) {      // 입력이 있으면 반환
+                    f->a0 = (uint32_t)ch;
+                    break;
+                }
+                yield();            // 폴링 + 양보
+            }
+            break;
+        }
+        case SYS_EXIT:
+            printf("process %d exited\n", current_proc->pid);
+            current_proc->state = PROC_EXITED;
+            yield();
+            PANIC("unreachable");
+        default:
+            PANIC("unexpected syscall a3=%x\n", f->a3);
+    }
+}
+
 void handle_trap(struct trap_frame *f) {
     uint32_t scause = READ_CSR(scause);
-    uint32_t stval = READ_CSR(stval);
-    uint32_t user_pc = READ_CSR(sepc);
+    uint32_t stval  = READ_CSR(stval);
+     uint32_t sepc   = READ_CSR(sepc);
 
-    PANIC("unexpected trap scause=%x, stval=%x, sepc=%x\n", scause, stval, user_pc);
+    if (scause == SCAUSE_ECALL) {
+        handle_syscall(f);
+        sepc += 4;                  // ecall 다음 명령으로
+        WRITE_CSR(sepc, sepc);
+        return;
+    }
+
+    PANIC("unexpected trap scause=%x, stval=%x, sepc=%x\n", scause, stval, sepc);
 }
+
 
 __attribute__((naked)) void switch_context(uint32_t *prev_sp,
                                            uint32_t *next_sp) {
@@ -122,11 +161,13 @@ __attribute__((naked)) void switch_context(uint32_t *prev_sp,
 }
 
 
-__attribute__((naked))
-__attribute__((aligned(4)))
+__attribute__((naked, aligned(4)))
 void kernel_entry(void) {
     __asm__ __volatile__(
-        "csrw sscratch, sp\n"
+        // sp(user) <-> sscratch(kernel stack top) swap
+        "csrrw sp, sscratch, sp\n"
+
+        // allocate trap frame on kernel stack
         "addi sp, sp, -4 * 31\n"
         "sw ra,  4 * 0(sp)\n"
         "sw gp,  4 * 1(sp)\n"
@@ -159,12 +200,16 @@ void kernel_entry(void) {
         "sw s10, 4 * 28(sp)\n"
         "sw s11, 4 * 29(sp)\n"
 
-        "csrr a0, sscratch\n"
-        "sw a0, 4 * 30(sp)\n"
+        // Save user sp into trap_frame->sp.
+        // After the swap above, sscratch holds the user sp.
+        "csrr t0, sscratch\n"
+        "sw t0, 4 * 30(sp)\n"
 
+        // call C trap handler: a0 = &trap_frame
         "mv a0, sp\n"
         "call handle_trap\n"
 
+        // restore registers
         "lw ra,  4 * 0(sp)\n"
         "lw gp,  4 * 1(sp)\n"
         "lw tp,  4 * 2(sp)\n"
@@ -195,10 +240,16 @@ void kernel_entry(void) {
         "lw s9,  4 * 27(sp)\n"
         "lw s10, 4 * 28(sp)\n"
         "lw s11, 4 * 29(sp)\n"
-        "lw sp,  4 * 30(sp)\n"
+
+        // free trap frame
+        "addi sp, sp, 4 * 31\n"
+
+        // swap back: sp becomes user sp, sscratch becomes kernel stack top
+        "csrrw sp, sscratch, sp\n"
         "sret\n"
     );
 }
+
 
 __attribute__((naked)) void user_entry(void) {
     __asm__ __volatile__(
@@ -214,7 +265,12 @@ __attribute__((naked)) void user_entry(void) {
 
 // 콘솔에 문자 1개 출력 (Console Putchar: EID=1, FID=0)
 void putchar(char ch) {
-    sbi_call(ch, 0, 0, 0, 0, 0, 0, 1);
+    sbi_call((long)ch, 0, 0, 0, 0, 0, 0, 1);
+}
+
+static long sbi_getchar(void) {
+    struct sbiret ret = sbi_call(0, 0, 0, 0, 0, 0, 0, 2);
+    return ret.error;
 }
 
 void yield(void) {
